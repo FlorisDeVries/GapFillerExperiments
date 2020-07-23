@@ -15,6 +15,8 @@ public class VertexNode : MonoBehaviour, IPointerEnterHandler, IPointerExitHandl
     [SerializeField]
     private Material _hoverMaterial = default;
 
+    public bool Clickable = true;
+
     private void Start()
     {
         _collider = GetComponent<SphereCollider>();
@@ -23,7 +25,8 @@ public class VertexNode : MonoBehaviour, IPointerEnterHandler, IPointerExitHandl
 
     public void OnPointerClick(PointerEventData eventData)
     {
-        MeshCreator.Instance.AddVertex(_preciseLocation);
+        if (Clickable)
+            MeshCreator.Instance.AddVertex(_preciseLocation);
     }
 
     public void OnPointerEnter(PointerEventData eventData)

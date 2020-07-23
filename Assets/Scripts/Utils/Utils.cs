@@ -5,6 +5,50 @@ using UnityEngine;
 public static class Utils
 {
     /// <summary>
+    /// Checks whether two segments defined as [p1, p2] and [p3, p4] intersect
+    /// </summary>
+    /// <param name="p1"></param>
+    /// <param name="p2"></param>
+    /// <param name="p3"></param>
+    /// <param name="p4"></param>
+    /// <returns></returns>
+    public static bool SegmentIntersect(Vector3 p1, Vector3 p2, Vector3 p3, Vector3 p4, out Vector3 intersectionPoint)
+    {
+        intersectionPoint = Vector3.zero;
+
+        // Get the segments' parameters.
+        float dx12 = p2.x - p1.x;
+        float dy12 = p2.z - p1.z;
+        float dx34 = p4.x - p3.x;
+        float dy34 = p4.z - p3.z;
+
+        // Solve for t1 and t2
+        float denominator = (dy12 * dx34 - dx12 * dy34);
+        float t1 =
+            ((p1.x - p3.x) * dy34 + (p3.z - p1.z) * dx34)
+                / denominator;
+
+        if (float.IsInfinity(t1))
+        {
+            return false;
+        }
+
+        float t2 =
+            ((p3.x - p1.x) * dy12 + (p1.z - p3.z) * dx12)
+                / -denominator;
+
+        // Find the point of intersection.
+        intersectionPoint = new Vector3(p1.x + dx12 * t1, 0, p1.z + dy12 * t1);
+
+        // The segments intersect if t1 and t2 are between 0 and 1.
+        bool intersect =
+            ((t1 >= 0) && (t1 <= 1) &&
+             (t2 >= 0) && (t2 <= 1));
+
+        return intersect;
+    }
+
+    /// <summary>
     /// Returns a random point in the given bounds
     /// </summary>
     public static Vector3 RandomPointInBounds(Bounds bounds)

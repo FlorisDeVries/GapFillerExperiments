@@ -2,24 +2,28 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.UI;
 
 // TODO:
 // Add line renderer
 public class MeshCreator : UnitySingleton<MeshCreator>
 {
-    List<Vector3> _vertices = new List<Vector3>();
-    List<Vector2> _vertices2D = new List<Vector2>();
-    List<GameObject> _vObjects = new List<GameObject>();
-    List<Vector2> _edges = new List<Vector2>();
-    List<LineRenderer> _lines = new List<LineRenderer>();
-
-    LineRenderer _currentLine = new LineRenderer();
+    private List<Vector3> _vertices = new List<Vector3>();
+    private List<Vector2> _vertices2D = new List<Vector2>();
+    private List<GameObject> _vObjects = new List<GameObject>();
+    private List<Vector2> _edges = new List<Vector2>();
+    private List<LineRenderer> _lines = new List<LineRenderer>();
+    private LineRenderer _currentLine = new LineRenderer();
 
     public GameObject PrefabObject = default;
     public Material MeshMaterial = default;
+    public Button FinishButton = default;
 
     private void Start()
     {
+        FinishButton.onClick.AddListener(FinishMesh);
+        FinishButton.interactable = false;
+
         _currentLine = gameObject.AddComponent<LineRenderer>();
 
         _currentLine.material = new Material(Shader.Find("Particles/Standard Unlit"));
@@ -55,7 +59,6 @@ public class MeshCreator : UnitySingleton<MeshCreator>
 
     public void AddVertex(Vector3 v)
     {
-
         if (_vertices.Count > 0 && v == _vertices[0])
             FinishMesh();
         else
@@ -69,6 +72,8 @@ public class MeshCreator : UnitySingleton<MeshCreator>
 
             if (_vertices.Count > 1)
                 AddEdge(_vertices.Count - 2, _vertices.Count - 1);
+            if (_vertices.Count > 2)
+                FinishButton.interactable = true;
 
             GameObject gO = Instantiate(PrefabObject);
             gO.GetComponent<VertexNode>().SetLocation(v);
@@ -89,6 +94,8 @@ public class MeshCreator : UnitySingleton<MeshCreator>
 
         // Prepare gameObject
         GameObject meshObject = new GameObject("MeshObject");
+        meshObject.transform.SetParent(MeshesParent.Instance.transform);
+
         MeshFilter meshFilter = meshObject.AddComponent<MeshFilter>();
         MeshRenderer renderer = meshObject.AddComponent<MeshRenderer>();
         renderer.shadowCastingMode = ShadowCastingMode.Off;
@@ -97,6 +104,9 @@ public class MeshCreator : UnitySingleton<MeshCreator>
         // Generate Mesh
         // meshFilter.sharedMesh = GenerateMesh();
         meshFilter.sharedMesh = GenerateMeshTriangulator();
+
+        if (meshFilter.sharedMesh.vertexCount == 0)
+            Destroy(meshObject);
 
         // Cleanup for next polygon
         Reset();
@@ -133,6 +143,7 @@ public class MeshCreator : UnitySingleton<MeshCreator>
         _edges = new List<Vector2>();
 
         _currentLine.enabled = false;
+        FinishButton.interactable = false;
     }
 
     private bool IntersectAnyEdge(Vector3 v1, Vector3 v2, int idx1 = -1, int idx2 = -1)
@@ -145,45 +156,14 @@ public class MeshCreator : UnitySingleton<MeshCreator>
             Vector3 v3 = _vertices[(int)edge.x];
             Vector3 v4 = _vertices[(int)edge.y];
 
-
-            if (SegmentIntersect(v1, v2, v3, v4))
+            Vector3 intersectionPoint = new Vector3();
+            if (Utils.SegmentIntersect(v1, v2, v3, v4, out intersectionPoint))
             {
                 return true;
             }
         }
 
         return false;
-    }
-
-    private bool SegmentIntersect(Vector3 p1, Vector3 p2, Vector3 p3, Vector3 p4)
-    {
-        // Get the segments' parameters.
-        float dx12 = p2.x - p1.x;
-        float dy12 = p2.z - p1.z;
-        float dx34 = p4.x - p3.x;
-        float dy34 = p4.z - p3.z;
-
-        // Solve for t1 and t2
-        float denominator = (dy12 * dx34 - dx12 * dy34);
-        float t1 =
-            ((p1.x - p3.x) * dy34 + (p3.z - p1.z) * dx34)
-                / denominator;
-
-        if (float.IsInfinity(t1))
-        {
-            return false;
-        }
-
-        float t2 =
-            ((p3.x - p1.x) * dy12 + (p1.z - p3.z) * dx12)
-                / -denominator;
-
-        // The segments intersect if t1 and t2 are between 0 and 1.
-        bool intersect =
-            ((t1 >= 0) && (t1 <= 1) &&
-             (t2 >= 0) && (t2 <= 1));
-
-        return intersect;
     }
 
     private bool AddEdge(int idx1, int idx2)
