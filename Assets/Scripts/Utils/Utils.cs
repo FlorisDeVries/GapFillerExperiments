@@ -45,6 +45,11 @@ public static class Utils
             ((t1 >= 0) && (t1 <= 1) &&
              (t2 >= 0) && (t2 <= 1));
 
+        // Exclude point intersections
+        if (intersect)
+            if (intersectionPoint == p1 || intersectionPoint == p2 || intersectionPoint == p3 || intersectionPoint == p4)
+                intersect = false;
+
         return intersect;
     }
 

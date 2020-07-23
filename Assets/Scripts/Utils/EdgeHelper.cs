@@ -7,7 +7,7 @@ using UnityEngine;
 /// </summary>
 public static class EdgeHelper
 {
-    public struct Edge
+    public class Edge
     {
         public int v1;
         public int v2;
