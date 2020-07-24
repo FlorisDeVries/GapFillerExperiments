@@ -1343,6 +1343,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   PrefabObject: {fileID: 8338398665721893549, guid: bf9bf4380ca7469489cfe27e81bc56e2,
     type: 3}
+  NodePrefab: {fileID: 2457940187125385190, guid: a83f4ba4ab21fc14b8b31150571093cd,
+    type: 3}
   MeshMaterial: {fileID: 2100000, guid: e816bab24e94f124a84294b591032ae6, type: 2}
   FinishButton: {fileID: 948065290}
 --- !u!114 &1490259735

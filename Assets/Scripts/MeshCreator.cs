@@ -16,6 +16,7 @@ public class MeshCreator : UnitySingleton<MeshCreator>
     private LineRenderer _currentLine = new LineRenderer();
 
     public GameObject PrefabObject = default;
+    public GameObject NodePrefab = default;
     public Material MeshMaterial = default;
     public Button FinishButton = default;
 
@@ -60,7 +61,9 @@ public class MeshCreator : UnitySingleton<MeshCreator>
     public void AddVertex(Vector3 v)
     {
         if (_vertices.Count > 0 && v == _vertices[0])
+        {
             FinishMesh();
+        }
         else
         {
             if (_vertices.Count > 0 && IntersectAnyEdge(v, _vertices[_vertices.Count - 1], _vertices.Count - 1))
@@ -92,6 +95,33 @@ public class MeshCreator : UnitySingleton<MeshCreator>
         if (_vertices.Count < 3)
             return;
 
+        CreateMesh(_vertices);
+    }
+
+    private Mesh GenerateMeshTriangulator()
+    {
+        Mesh mesh = new Mesh();
+        List<int> triangles = new List<int>();
+
+        Triangulator t = new Triangulator(_vertices2D.ToArray());
+
+        mesh.SetVertices(_vertices);
+        mesh.triangles = t.Triangulate();
+        return mesh;
+    }
+
+    public void CreateMesh(List<Vector3> vertices, bool debug = false)
+    {
+        // Reset();
+        _vertices2D = new List<Vector2>();
+        _vertices = vertices;
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            if (debug)
+                StartCoroutine(DrawPointWithDelay(i / 4f, vertices[i], Color.black, 0.2f + .01f * (i + 1)));
+            _vertices2D.Add(new Vector2(vertices[i].x, vertices[i].z));
+        }
+
         // Prepare gameObject
         GameObject meshObject = new GameObject("MeshObject");
         meshObject.transform.SetParent(MeshesParent.Instance.transform);
@@ -108,23 +138,7 @@ public class MeshCreator : UnitySingleton<MeshCreator>
         if (meshFilter.sharedMesh.vertexCount == 0)
             Destroy(meshObject);
 
-        // Cleanup for next polygon
         Reset();
-    }
-
-    private Mesh GenerateMeshTriangulator()
-    {
-        Mesh mesh = new Mesh();
-        List<int> triangles = new List<int>();
-
-        Triangulator t = new Triangulator(_vertices2D.ToArray());
-
-        mesh.SetVertices(_vertices);
-        mesh.triangles = t.Triangulate();
-        mesh.Optimize();
-        mesh.RecalculateNormals();
-        mesh.RecalculateBounds();
-        return mesh;
     }
 
     public void Reset()
@@ -144,6 +158,20 @@ public class MeshCreator : UnitySingleton<MeshCreator>
 
         _currentLine.enabled = false;
         FinishButton.interactable = false;
+    }
+
+    IEnumerator DrawPointWithDelay(float wait, Vector3 p, Color color, float size)
+    {
+        yield return new WaitForSeconds(wait);
+        DrawPoint(p, color, size);
+    }
+
+    private void DrawPoint(Vector3 p, Color color, float size = 1)
+    {
+        GameObject gO = Instantiate(NodePrefab, p, Quaternion.identity);
+        gO.GetComponent<DebugNode>().SetColor(color);
+        gO.GetComponent<DebugNode>().SetSize(size);
+        _vObjects.Add(gO);
     }
 
     private bool IntersectAnyEdge(Vector3 v1, Vector3 v2, int idx1 = -1, int idx2 = -1)

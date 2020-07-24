@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.Rendering;
 using static EdgeHelper;
 
 public class OverlapFixer : MonoBehaviour
@@ -19,12 +20,12 @@ public class OverlapFixer : MonoBehaviour
     {
         FixButton.onClick.AddListener(() =>
         {
-            DetectOverlap();
+            DetectAllOverlaps();
         });
 
         DrawDebugButton.onClick.AddListener(() =>
         {
-            DetectOverlap(false);
+            DetectAllOverlaps(false);
         });
 
         ClearButton.onClick.AddListener(ClearDebug);
@@ -32,55 +33,63 @@ public class OverlapFixer : MonoBehaviour
         _debugParent = new GameObject("Debug");
     }
 
-    private void DetectOverlap(bool fix = true)
+    private void DetectAllOverlaps(bool fix = true)
     {
         ClearDebug();
 
         List<MeshFilter> filters = MeshesParent.Instance.GetAllMeshes();
         for (int i = 0; i < filters.Count; i++)
         {
-            Mesh mesh = filters[i].sharedMesh;
-            Vector3 randomPoint = mesh.vertices[Random.Range(0, mesh.vertexCount - 1)];
+            if (DetectOverlapFor(filters, i, fix))
+                break;
+        }
+        DrawDebug();
+    }
 
-            for (int j = i + 1; j < filters.Count; j++)
+    private bool DetectOverlapFor(List<MeshFilter> filters, int i, bool fix)
+    {
+        Mesh mesh = filters[i].sharedMesh;
+        Vector3 randomPoint = mesh.vertices[Random.Range(0, mesh.vertexCount - 1)];
+        for (int j = i + 1; j < filters.Count; j++)
+        {
+            Mesh mesh2 = filters[j].sharedMesh;
+
+            // If the bounds are not overlapping the polygons won't overlap
+            // Doing this check first speeds the algorithm up
+            if (!BoundsOverlap(mesh.bounds, mesh2.bounds))
+                continue;
+
+            Vector3 randomPoint2 = mesh2.vertices[Random.Range(0, mesh2.vertexCount - 1)];
+
+            // Check whether any of the edges overlap
+            bool overlap = AnyEdgeOverlap(mesh, mesh2);
+
+            if (!overlap)
             {
-                Mesh mesh2 = filters[j].sharedMesh;
+                // Checking tuple so the second loop can become shorter every loop
+                if (PointInPolygon(randomPoint, mesh2))
+                    Destroy(filters[i].gameObject);
 
-                // If the bounds are not overlapping the polygons won't overlap
-                // Doing this check first speeds the algorithm up
-                if (!BoundsOverlap(mesh.bounds, mesh2.bounds))
-                    continue;
-
-                Vector3 randomPoint2 = mesh2.vertices[Random.Range(0, mesh2.vertexCount - 1)];
-
-                // Check whether any of the edges overlap
-                bool overlap = AnyEdgeOverlap(mesh, mesh2);
-
-                if (!overlap)
+                if (PointInPolygon(randomPoint, mesh2))
+                    Destroy(filters[j].gameObject);
+            }
+            else
+            {
+                // Complex overlap, we need to resolve this
+                if (fix)
                 {
-                    // Checking tuple so the second loop can become shorter every loop
-                    if (CheckInBounds(randomPoint, mesh2.bounds))
-                        Destroy(filters[i].gameObject);
-
-                    if (CheckInBounds(randomPoint2, mesh.bounds))
-                        Destroy(filters[j].gameObject);
+                    FixOverlap(filters[i], filters[j]);
+                    return true;
                 }
                 else
                 {
-                    // Complex overlap, we need to resolve this
-                    if (fix)
-                        FixOverlap(filters[i], filters[j]);
-                    else
-                    {
-                        List<Edge> edges1 = new List<Edge>();
-                        List<Edge> edges2 = new List<Edge>();
-                        GetAllEdgeIntersections(mesh, mesh2, out edges1, out edges2);
-                    }
+                    List<Edge> edges1 = new List<Edge>();
+                    List<Edge> edges2 = new List<Edge>();
+                    GetAllEdgeIntersections(mesh, mesh2, out edges1, out edges2);
                 }
             }
         }
-
-        // DrawDebug();
+        return false;
     }
 
     private void Update()
@@ -95,7 +104,7 @@ public class OverlapFixer : MonoBehaviour
         }
     }
 
-    private void FixOverlap(MeshFilter filter1, MeshFilter filter2)
+    private void FixOverlap(MeshFilter filter1, MeshFilter filter2, bool debug = false)
     {
         Mesh mesh1 = filter1.sharedMesh;
         Mesh mesh2 = filter2.sharedMesh;
@@ -103,92 +112,175 @@ public class OverlapFixer : MonoBehaviour
         List<Edge> edges1 = new List<Edge>();
         List<Edge> edges2 = new List<Edge>();
 
-        List<EdgeIntersect> intersections = GetAllEdgeIntersections(mesh1, mesh2, out edges1, out edges2);
+        List<EdgeIntersect> intersections = GetAllEdgeIntersections(mesh1, mesh2, out edges1, out edges2, false);
 
 
         int startIndex = 0;
-        int offset = 0;
-        if (PointInPolygon(mesh1.vertices[startIndex], mesh2))
-        {
-            Debug.Log("We're in");
-            startIndex = edges1[intersections[0].edge1].v2;
-            offset = 1;
-        }
+        while (PointInPolygon(mesh1.vertices[startIndex], mesh2))
+            startIndex++;
 
         bool onFirstMesh = true;
         Edge edge = edges1.Find(x => x.v1 == startIndex);
         int edgeIdx = edges1.FindIndex(x => x == edge);
         List<Vector3> vertices = new List<Vector3>();
+
+        if (debug)
+            DrawPoint(mesh1.vertices[startIndex], Color.yellow, .5f);
+
         vertices.Add(mesh1.vertices[startIndex]);
 
-        // Intersections are in order, so loop over those while adding vertices in between
-        for (int i = offset; i < intersections.Count + offset; i++)
-        {
-            int intersectionIdx = i >= intersections.Count ? i - intersections.Count : i;
-            EdgeIntersect intersect = intersections[intersectionIdx];
-            Edge e1 = edges1[intersect.edge1];
-            Edge e2 = edges2[intersect.edge2];
+        int depth = 12;
 
-            while (onFirstMesh && intersect.edge1 != edgeIdx || !onFirstMesh && intersect.edge2 != edgeIdx) // Connect everything till we found this intersection
+        // All intersections have been resolved we should now be on mesh1, so finish up for mesh1
+        while (edge.v2 != startIndex || !onFirstMesh || intersections.Count > 0)
+        {
+            EdgeIntersect intersect = new EdgeIntersect();
+            if (onFirstMesh)
             {
-                if (onFirstMesh)
+                if (GetClosestIntersect(vertices[vertices.Count - 1], intersections, edges1, edges2, edge, mesh1, mesh2, onFirstMesh, out intersect))
                 {
-                    vertices.Add(mesh1.vertices[edge.v2]);
+                    vertices.Add(intersect.intersectionPoint);
+                    intersections.Remove(intersect);
+
+                    // Prepare for flip
+                    edgeIdx = intersect.edge2;
+                    edge = edges2[edgeIdx];
+                    onFirstMesh = !onFirstMesh;
                 }
                 else
                 {
-                    Debug.Log("Hellooo");
-                    vertices.Add(mesh2.vertices[edge.v2]);
-                }
+                    if (mesh1.vertices[edge.v2] != vertices[0])
+                        vertices.Add(mesh1.vertices[edge.v2]);
 
-                edgeIdx++;
-
-                if (onFirstMesh)
-                {
+                    edgeIdx++;
                     if (edgeIdx >= edges1.Count)
                         edgeIdx = 0;
 
                     edge = edges1[edgeIdx];
                 }
+            }
+            else
+            {
+                if (GetClosestIntersect(vertices[vertices.Count - 1], intersections, edges1, edges2, edge, mesh1, mesh2, onFirstMesh, out intersect))
+                {
+                    vertices.Add(intersect.intersectionPoint);
+                    intersections.Remove(intersect);
+
+                    // Prepare for flip
+                    edgeIdx = intersect.edge1;
+                    edge = edges1[edgeIdx];
+                    onFirstMesh = !onFirstMesh;
+                }
                 else
                 {
+                    vertices.Add(mesh2.vertices[edge.v2]);
+
+                    edgeIdx++;
                     if (edgeIdx >= edges2.Count)
                         edgeIdx = 0;
 
                     edge = edges2[edgeIdx];
                 }
             }
-            vertices.Add(intersect.intersectionPoint);
-            if (!onFirstMesh)
-            {
-                edge = e1;
-                edgeIdx = edges1.FindIndex(x => x == edge);
-            }
+
+            // depth--;
+            // if (depth <= 0)
+            // {
+            //     bool gottem = GetClosestIntersect(vertices[vertices.Count - 1], intersections, edges1, edges2, edge, mesh1, mesh2, onFirstMesh, out intersect, true);
+            //     DrawPoint(intersect.intersectionPoint, Color.black, 1);
+            //     Debug.Log(gottem);
+            //     if (onFirstMesh)
+            //         DrawEdge(edge, mesh1, Color.black);
+            //     else
+            //         DrawEdge(edge, mesh2, Color.black);
+            //     break;
+            // }
+        }
+
+        MeshCreator.Instance.CreateMesh(vertices, debug);
+
+        // Move these since destroying takes a bit longer than a few lines of codes...
+        filter1.gameObject.transform.SetParent(_debugParent.transform);
+        filter2.gameObject.transform.SetParent(_debugParent.transform);
+        Destroy(filter1.gameObject);
+        Destroy(filter2.gameObject);
+
+        DetectAllOverlaps();
+    }
+
+    private bool GetClosestIntersect(Vector3 lastPoint, List<EdgeIntersect> intersections, List<Edge> edges1, List<Edge> edges2, Edge e, Mesh m1, Mesh m2, bool onFirstMesh, out EdgeIntersect intersect, bool debug = false)
+    {
+        intersect = new EdgeIntersect();
+        List<EdgeIntersect> intersects = new List<EdgeIntersect>();
+        Mesh m = new Mesh();
+        if (onFirstMesh)
+        {
+            m = m1;
+            intersects = intersections.FindAll(x => edges1[x.edge1] == e);
+        }
+        else
+        {
+            m = m2;
+            intersects = intersections.FindAll(x => edges2[x.edge2] == e);
+        }
+
+        // Get direction of the edge
+        Vector3 edge_p1 = m.vertices[e.v1];
+        Vector3 edge_p2 = m.vertices[e.v2];
+        Vector3 edgeDirection = (edge_p2 - edge_p1).normalized;
+
+        if (debug)
+        {
+            DrawPoint(edge_p1, Color.red, .3f);
+            DrawPoint(edge_p2, Color.blue, .4f);
+        }
+
+        if (intersects.Count == 0)
+        {
+            return false;
+        }
+
+        float minDist = float.MaxValue;
+        if (intersects.Count == 1)
+        {
+            intersect = intersects[0];
+
+            Vector3 newPointDirection = (intersect.intersectionPoint - lastPoint).normalized;
+            if (Vector3.Dot(newPointDirection, edgeDirection) > 0)
+                return true;
             else
+                return false;
+        }
+        else
+        {
+            foreach (EdgeIntersect eI in intersects)
             {
-                edge = e2;
-                edgeIdx = edges2.FindIndex(x => x == edge);
+                Vector3 intersectionPoint = new Vector3();
+                Vector3 p1 = m1.vertices[edges1[eI.edge1].v1];
+                Vector3 p2 = m1.vertices[edges1[eI.edge1].v2];
+                Vector3 p3 = m2.vertices[edges2[eI.edge2].v1];
+                Vector3 p4 = m2.vertices[edges2[eI.edge2].v2];
+
+                Utils.SegmentIntersect(p1, p2, p3, p4, out intersectionPoint);
+
+                // Check if in correct direction
+                Vector3 newPointDirection = (intersectionPoint - lastPoint).normalized;
+                if (Vector3.Dot(newPointDirection, edgeDirection) > 0)
+                { // Same direction if dot is positive
+                    if (Vector3.Distance(intersectionPoint, lastPoint) < minDist)
+                    {
+                        minDist = Vector3.Distance(intersectionPoint, lastPoint);
+                        intersect = eI;
+
+                    }
+                }
             }
-            onFirstMesh = !onFirstMesh;
         }
 
-        // All intersections have been resolved we should now be on mesh1, so finish up for mesh1
-        while (edge.v2 != startIndex)
-        {
-            vertices.Add(mesh1.vertices[edge.v2]);
+        if (minDist == float.MaxValue)
+            return false;
 
-            edgeIdx++;
-            if (edgeIdx >= edges1.Count)
-                edgeIdx = 0;
-
-            edge = edges1[edgeIdx];
-        }
-
-        for (int i = 0; i < vertices.Count; i++)
-        {
-            Debug.Log(vertices[i]);
-            StartCoroutine(DrawPointWithDelay(2 + i / 4f, vertices[i], Color.black, .7f));
-        }
+        return true;
     }
 
     private void DrawEdge(Edge e, Mesh m, Color color)
@@ -356,7 +448,7 @@ public class OverlapFixer : MonoBehaviour
         return false;
     }
 
-    private List<EdgeIntersect> GetAllEdgeIntersections(Mesh mesh1, Mesh mesh2, out List<Edge> edges1, out List<Edge> edges2, bool debug = true)
+    private List<EdgeIntersect> GetAllEdgeIntersections(Mesh mesh1, Mesh mesh2, out List<Edge> edges1, out List<Edge> edges2, bool debug = false)
     {
         List<EdgeIntersect> intersections = new List<EdgeIntersect>();
 
@@ -369,6 +461,8 @@ public class OverlapFixer : MonoBehaviour
             Vector3 p1 = mesh1.vertices[e1.v1];
             Vector3 p2 = mesh1.vertices[e1.v2];
 
+
+            List<EdgeIntersect> tempIntersections = new List<EdgeIntersect>();
             for (int j = 0; j < edges2.Count; j++)
             {
                 Edge e2 = edges2[j];
@@ -382,15 +476,22 @@ public class OverlapFixer : MonoBehaviour
                         DrawLine(p1, p2, Color.red);
                         DrawLine(p3, p4, Color.red);
 
-                        DrawPoint(intersectionPoint, Color.red, .5f);
-                        DrawPoint(p1, Color.blue, .5f);
-                        DrawPoint(p2, Color.green, .5f);
-                        DrawPoint(p3, Color.blue, .5f);
-                        DrawPoint(p4, Color.green, .5f);
+                        DrawPoint(intersectionPoint, Color.red, .2f);
+                        DrawPoint(p1, Color.blue, .2f);
+                        DrawPoint(p2, Color.green, .2f);
+                        DrawPoint(p3, Color.blue, .2f);
+                        DrawPoint(p4, Color.green, .2f);
                     }
                     intersections.Add(new EdgeIntersect(i, j, intersectionPoint));
                 }
             }
+
+            // StartCoroutine(DrawEdgeWithDelay(i, e1, mesh1, Color.green));
+            // StartCoroutine(DrawPointWithDelay(i, p1, Color.green, .5f));
+
+            // for (int j = 0; j < tempIntersections.Count; j++)
+            //     StartCoroutine(DrawEdgeWithDelay(i + j / 2f, edges2[tempIntersections[j].edge2], mesh2, Color.red));
+
         }
 
         return intersections;
