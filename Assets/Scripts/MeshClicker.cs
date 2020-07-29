@@ -5,11 +5,12 @@ using UnityEngine.EventSystems;
 
 namespace IFC
 {
-    public class FloorPlane : MonoBehaviour, IPointerClickHandler
+    [RequireComponent(typeof(MeshCollider))]
+    public class MeshClicker : MonoBehaviour, IPointerClickHandler
     {
         public void OnPointerClick(PointerEventData eventData)
         {
-            MeshCreator.Instance.AddVertex(Utils.GetPlaneIntersection(eventData.position));
+            MeshCreator.Instance.AddHoleVertex(Utils.GetPlaneIntersection(eventData.position), this);
         }
     }
 }
