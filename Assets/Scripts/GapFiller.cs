@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.UI;
 using static IFC.EdgeHelper;
 
@@ -10,17 +11,29 @@ namespace IFC
     public class GapFiller : MonoBehaviour
     {
         public Button FixButton = default;
+        public Button GenerateButton = default;
         List<MeshInfo> AllMeshes = new List<MeshInfo>();
+
+        List<MeshInfo> AllGaps = new List<MeshInfo>();
         List<EdgeData> edges = new List<EdgeData>();
+        List<EdgeData> AllEdges = new List<EdgeData>();
+
         Bounds meshesBounds = new Bounds();
+        List<Vector3> BBVertices = new List<Vector3>();
 
         List<EdgeData> newEdges = new List<EdgeData>();
+        Dictionary<(int, int), List<MeshInfo>> newMeshes = new Dictionary<(int, int), List<MeshInfo>>();
 
         private void Start()
         {
             FixButton.onClick.AddListener(() =>
             {
                 FillGaps();
+            });
+
+            GenerateButton.onClick.AddListener(() =>
+            {
+                CreateMeshes(AllGaps, Random.ColorHSV());
             });
         }
 
@@ -30,11 +43,12 @@ namespace IFC
             SetMeshes();
 
             ExtractData();
-            SortEdges();
 
             CreateBoundary();
 
-            FillLoop();
+            ConnectEdgesLoop();
+
+            CombineNewMeshes();
         }
 
         public void SetMeshes()
@@ -45,6 +59,7 @@ namespace IFC
             foreach (MeshFilter f in filters)
             {
                 meshes.Add(f.sharedMesh);
+                // Destroy(f.gameObject);
             }
             SetMeshes(meshes);
         }
@@ -73,11 +88,12 @@ namespace IFC
                 foreach (EdgeInfo eI in m.OuterEdges)
                 {
                     eI.MeshIndex = i;
-                    EdgeData eData = new EdgeData(m.Vertices[eI.v1], m.Vertices[eI.v2], i);
+                    EdgeData eData = new EdgeData(eI.v1, eI.v2, i, i);
 
                     min = Vector3.Min(min, m.Vertices[eI.v1]);
                     max = Vector3.Max(max, m.Vertices[eI.v1]);
                     edges.Add(eData);
+                    AllEdges.Add(eData);
                 }
             }
 
@@ -86,95 +102,147 @@ namespace IFC
 
         private void SortEdges()
         {
-            edges.Sort((x, y) => x.Length.CompareTo(y.Length));
+            edges.Sort((x, y) => y.GetLength(AllMeshes).CompareTo(x.GetLength(AllMeshes)));
         }
 
         private void CreateBoundary()
         {
-            List<Vector3> vertices = new List<Vector3>();
+            BBVertices = new List<Vector3>();
 
             Vector3 p3 = new Vector3(meshesBounds.min.x, 0, meshesBounds.max.z);
             Vector3 p4 = new Vector3(meshesBounds.max.x, 0, meshesBounds.min.z);
-            vertices.Add(meshesBounds.min);
-            vertices.Add(p3);
-            vertices.Add(meshesBounds.max);
-            vertices.Add(p4);
+            BBVertices.Add(meshesBounds.min);
+            BBVertices.Add(p3);
+            BBVertices.Add(meshesBounds.max);
+            BBVertices.Add(p4);
 
-            foreach (Vector3 v in vertices)
+            foreach (Vector3 v in BBVertices)
             {
                 InSceneDebugTool.Instance.DrawPoint(v, Color.red, .3f);
             }
 
-            MeshInfo m = new MeshInfo(vertices);
-            m.Draw(Color.green);
+            MeshInfo m = new MeshInfo(BBVertices);
+            // m.Draw(Color.green);
 
-            AllMeshes.Add(m);
+            // AllMeshes.Add(m);
         }
 
-        private void FillLoop()
+        private void ConnectEdgesLoop()
+        {
+            newMeshes = new Dictionary<(int, int), List<MeshInfo>>();
+
+            while (edges.Count > 0)
+            {
+                SortEdges();
+                ConnectEdges();
+                edges = newEdges;
+            }
+        }
+
+        private void ConnectEdges(bool debug = false)
         {
             newEdges = new List<EdgeData>();
 
             for (int i = 0; i < edges.Count; i++)
             {
                 EdgeData eD = edges[i];
-                Vector3 thirdPoint = FindClosestVertex(eD);
+                int thirdPoint;
+                int connectedIndex;
+                (thirdPoint, connectedIndex) = FindClosestVertex(eD);
 
-                newEdges.Add(new EdgeData(eD.V1, thirdPoint, -1));
-                newEdges.Add(new EdgeData(eD.V2, thirdPoint, -1));
+                // If no thirdPoint was found
+                if (connectedIndex == -1)
+                    continue;
 
-                InSceneDebugTool.Instance.DrawLineWithDelay(0, eD.V1, eD.V2, Color.black);
-                InSceneDebugTool.Instance.DrawLineWithDelay(0, eD.V1, thirdPoint, Color.black);
-                InSceneDebugTool.Instance.DrawLineWithDelay(0, thirdPoint, eD.V2, Color.black);
+                // Make sure every edge has the smallest meshIndex, while connected to the larger
+                EdgeData edge1 = new EdgeData(eD.V1, thirdPoint, eD.M1, connectedIndex);
+                EdgeData edge2 = new EdgeData(thirdPoint, eD.V2, connectedIndex, eD.M2);
 
-                InSceneDebugTool.Instance.DrawLineWithDelay(0, eD.Center, eD.Center + eD.Normal, Color.red);
+                // If the reverse exists we remove the edge instead of adding, if an edge exists twice it is enclosed and thus won't be necassary for the next stap
+                AddEdge(edge1);
+                AddEdge(edge2);
 
-                InSceneDebugTool.Instance.DrawPointWithDelay(0, thirdPoint, Color.green, .4f);
+
+                ConstructNewMesh(edge1, edge2);
+
+                if (debug)
+                {
+                    InSceneDebugTool.Instance.DrawLineWithDelay(0, eD.GetCenter(AllMeshes), eD.GetCenter(AllMeshes) + eD.GetNormal(AllMeshes), Color.red);
+                    InSceneDebugTool.Instance.DrawPointWithDelay(i / 4f, AllMeshes[connectedIndex].Vertices[thirdPoint], Color.green, .4f);
+                }
             }
         }
 
-        private Vector3 FindClosestVertex(EdgeData edge)
+        private void AddEdge(EdgeData edge)
+        {
+            EdgeData reversedEdge = new EdgeData(edge.V2, edge.V1, edge.M2, edge.M1);
+            if (newEdges.Contains(reversedEdge))
+            {
+                newEdges.Remove(reversedEdge);
+
+            }
+            else if (newEdges.Contains(edge))
+            {
+                newEdges.Remove(edge);
+            }
+            else if (!(AllEdges.Contains(edge) || AllEdges.Contains(reversedEdge)))
+            {
+                newEdges.Add(edge);
+                AllEdges.Add(edge);
+            }
+        }
+
+        private (int, int) FindClosestVertex(EdgeData edge)
         {
             Vector3 closest = Vector3.zero;
+            int closestIdx = -1;
             float minDist = float.MaxValue;
+            int mIndex = -1;
+            Vector3 v1 = AllMeshes[edge.M1].Vertices[edge.V1];
+            Vector3 v2 = AllMeshes[edge.M2].Vertices[edge.V2];
 
             for (int i = 0; i < AllMeshes.Count; i++)
             {
-                if (edge.MeshIndex == i)
-                {
-                    continue;
-                }
                 MeshInfo m = AllMeshes[i];
 
-                foreach (Vector3 v in m.Vertices)
+                // Walking over outerEdges so we ignore inner loops, those need to be solved seperately
+                for (int eIdx = 0; eIdx < m.OuterEdges.Count; eIdx++)
                 {
-                    Vector3 newPointDirection = (v - edge.Center).normalized;
+                    Vector3 v = m.Vertices[m.OuterEdges[eIdx].v1];
+                    if (v == v1 || v == v2)
+                        continue;
+
+                    Vector3 newPointDirection = (v - edge.GetCenter(AllMeshes));
+                    float dot = Vector3.Dot(newPointDirection.normalized, edge.GetNormal(AllMeshes));
+                    float angle = Mathf.Acos(dot) * Mathf.Rad2Deg;
                     // Same direction/not opposite direction
-                    if (Vector3.Dot(newPointDirection, edge.Normal) > 0)
+                    if (dot > 0 && angle < 87.5 && !Utils.PointInPolygon(edge.GetCenter(AllMeshes) + newPointDirection * .5f, m))
                     {
-                        float newDist = Vector3.Distance(v, edge.Center);
-                        if (newDist < minDist)
+                        float newDist = Vector3.Distance(v, edge.GetCenter(AllMeshes));
+                        if (newDist * (Mathf.PI - dot) < minDist)
                         {
-                            if (!IntersectsAnyEdge(edge.V1, v) && !IntersectsAnyEdge(edge.V2, v))
+                            if (!IntersectsAnyEdge(v1, v) && !IntersectsAnyEdge(v2, v))
                             {
-                                minDist = newDist;
+                                minDist = newDist * (Mathf.PI - dot);
                                 closest = v;
+                                closestIdx = m.OuterEdges[eIdx].v1;
+                                mIndex = i;
                             }
                         }
                     }
                 }
             }
-            if (closest == Vector3.zero)
-                Debug.Log("This is wrong");
-            return closest;
+
+            return (closestIdx, mIndex);
         }
 
         private bool IntersectsAnyEdge(Vector3 p1, Vector3 p2)
         {
-            foreach (EdgeData edge in newEdges)
+            // Check for new edges
+            foreach (EdgeData edge in AllEdges)
             {
-                Vector3 p3 = edge.V1;
-                Vector3 p4 = edge.V2;
+                Vector3 p3 = AllMeshes[edge.M1].Vertices[edge.V1];
+                Vector3 p4 = AllMeshes[edge.M2].Vertices[edge.V2];
 
                 if (p1 == p3 && p2 == p4 || p2 == p3 && p1 == p4)
                     continue;
@@ -189,30 +257,133 @@ namespace IFC
             return false;
         }
 
+        private void ConstructNewMesh(EdgeData edge1, EdgeData edge2)
+        {
+            List<Vector3> vertices = new List<Vector3>();
+            vertices.Add(AllMeshes[edge1.M1].Vertices[edge1.V1]);
+            vertices.Add(AllMeshes[edge1.M2].Vertices[edge1.V2]);
+            vertices.Add(AllMeshes[edge2.M2].Vertices[edge2.V2]);
+            MeshInfo m = new MeshInfo(vertices);
+
+            int min = Mathf.Min(edge1.M1, edge1.M2);
+            int max = Mathf.Max(edge1.M1, edge1.M2);
+            (int, int) connection = (-1, -1);
+            // If it connects two meshes we keep their indices
+            if ((edge1.M1 == edge2.M1 || edge1.M1 == edge2.M2) && (edge1.M2 == edge2.M1 || edge1.M2 == edge2.M2))
+            {
+                connection = (min, max);
+            }
+
+            if (!newMeshes.ContainsKey(connection))
+                newMeshes.Add(connection, new List<MeshInfo>());
+            newMeshes[connection].Add(m);
+        }
+
+        private void CombineNewMeshes()
+        {
+            foreach (KeyValuePair<(int, int), List<MeshInfo>> pair in newMeshes)
+            {
+                if (pair.Key.Item1 == -1 || pair.Key.Item1 == -1)
+                    continue;
+
+                List<MeshInfo> overlapped = OverlapFixer.Instance.FixOverlapsFor(pair.Value);
+                CreateMeshes(overlapped, Color.grey);
+                foreach (MeshInfo m in overlapped)
+                {
+                    AllGaps.Add(m);
+                    m.Draw(Random.ColorHSV(0f, 1f, 1f, 1f, 1f, 1f));
+                }
+            }
+        }
+
+        public void CreateMeshes(List<MeshInfo> meshes, Color color, bool debug = false)
+        {
+            foreach (MeshInfo mI in meshes)
+                CreateMesh(mI.GetOuterLoop(), new List<List<Vector2>>(), color);
+        }
+
+        public void CreateMesh(List<Vector2> vertices2D, List<List<Vector2>> holes, Color color, bool debug = false)
+        {
+            // Prepare gameObject
+            GameObject meshObject = new GameObject("MeshObject");
+            meshObject.transform.SetParent(GapsParent.Instance.transform);
+
+            MeshFilter meshFilter = meshObject.AddComponent<MeshFilter>();
+            MeshRenderer renderer = meshObject.AddComponent<MeshRenderer>();
+            renderer.shadowCastingMode = ShadowCastingMode.Off;
+            renderer.material = new Material(Shader.Find("Particles/Standard Unlit"));
+            renderer.material.color = color;
+
+            // Generate Mesh
+            meshFilter.sharedMesh = MeshGenerator.GenerateMeshTriangulator(vertices2D, holes);
+
+            if (meshFilter.sharedMesh.vertexCount == 0)
+                Destroy(meshObject);
+
+            meshObject.AddComponent<GapSelector>();
+            meshObject.GetComponent<MeshCollider>().convex = true;
+        }
+
         protected struct EdgeData
         {
-            public Vector3 V1;
-            public Vector3 V2;
-            public Vector3 Center;
-            public Vector3 Normal;
-            public float Length;
-            public int MeshIndex;
+            public int V1;
+            public int V2;
+            public int M1;
+            public int M2;
 
-            public EdgeData(Vector3 vec1, Vector3 vec2, int mIndex)
+            public EdgeData(int v1, int v2, int m1, int m2)
             {
-                V1 = vec1;
-                V2 = vec2;
-                Length = (V1 - V2).magnitude;
-                MeshIndex = mIndex;
-                Center = (V1 + V2) / 2;
+                V1 = v1;
+                V2 = v2;
+                M1 = m1;
+                M2 = m2;
+            }
 
-                Vector3 dir = (vec2 - vec1).normalized;
+            public void Draw(Color color, List<MeshInfo> AllMeshes)
+            {
+                Vector3 p1 = AllMeshes[M1].Vertices[V1];
+                Vector3 p2 = AllMeshes[M2].Vertices[V2];
+                InSceneDebugTool.Instance.DrawPoint(p1, Color.red, .2f);
+                InSceneDebugTool.Instance.DrawPoint(p2, Color.green, .2f);
+                InSceneDebugTool.Instance.DrawLine(p1, p2, color);
+            }
+
+            public void DrawWithDelay(float delay, Color color, List<MeshInfo> AllMeshes)
+            {
+                Vector3 p1 = AllMeshes[M1].Vertices[V1];
+                Vector3 p2 = AllMeshes[M2].Vertices[V2];
+
+                InSceneDebugTool.Instance.DrawLineWithDelay(delay, p1, p2, color);
+            }
+
+            public Vector3 GetCenter(List<MeshInfo> AllMeshes)
+            {
+                Vector3 p1 = AllMeshes[M1].Vertices[V1];
+                Vector3 p2 = AllMeshes[M2].Vertices[V2];
+
+                return (p1 + p2) / 2;
+            }
+
+            public Vector3 GetNormal(List<MeshInfo> AllMeshes)
+            {
+                Vector3 p2 = AllMeshes[M1].Vertices[V1];
+                Vector3 p1 = AllMeshes[M2].Vertices[V2];
+
+                Vector3 dir = (p1 - p2).normalized;
 
                 float theta = Mathf.Deg2Rad * 90f;
                 float cos = Mathf.Cos(theta);
                 float sin = Mathf.Sin(theta);
 
-                Normal = new Vector3(dir.x * cos - dir.z * sin, 0, dir.x * sin + dir.z * cos);
+                return new Vector3(dir.x * cos - dir.z * sin, 0, dir.x * sin + dir.z * cos);
+            }
+
+            public float GetLength(List<MeshInfo> AllMeshes)
+            {
+                Vector3 p1 = AllMeshes[M1].Vertices[V1];
+                Vector3 p2 = AllMeshes[M2].Vertices[V2];
+
+                return (p1 - p2).magnitude;
             }
         }
     }

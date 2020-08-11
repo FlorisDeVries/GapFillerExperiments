@@ -71,8 +71,16 @@ namespace IFC
         public void FixOverlaps()
         {
             SetMeshes();
+
+            List<MeshFilter> filters = MeshesParent.Instance.GetComponentsInChildren<MeshFilter>().ToList();
+            foreach (MeshFilter f in filters)
+            {
+                f.gameObject.transform.SetParent(this.transform);
+                Destroy(f.gameObject);
+            }
+
             PreProcessMeshes();
-            GenerateMeshes();
+            MeshCreator.Instance.CreateMeshes(AllMeshes);
         }
 
         private void SetMeshes(List<Mesh> meshes)
@@ -85,18 +93,17 @@ namespace IFC
             AllMeshes = meshInfo;
         }
 
+        public List<MeshInfo> FixOverlapsFor(List<MeshInfo> meshes)
+        {
+            AllMeshes = meshes;
+            PreProcessMeshes();
+            return AllMeshes;
+        }
+
         public void PreProcessMeshes()
         {
             Debug.Log($"Preprocessing... {AllMeshes.Count}");
             AllMeshes.Sort((x1, x2) => x2.Bounds.extents.magnitude.CompareTo(x1.Bounds.extents.magnitude));
-
-            List<MeshFilter> filters = MeshesParent.Instance.GetComponentsInChildren<MeshFilter>().ToList();
-            foreach (MeshFilter f in filters)
-            {
-                f.gameObject.transform.SetParent(this.transform);
-                Destroy(f.gameObject);
-            }
-
             for (int i = 0; i < AllMeshes.Count; i++)
             {
                 MeshInfo m = AllMeshes[i];
@@ -106,14 +113,6 @@ namespace IFC
                     break;
                 }
             }
-        }
-
-        public List<Mesh> GenerateMeshes()
-        {
-            foreach (MeshInfo mI in AllMeshes)
-                MeshCreator.Instance.CreateMesh(mI.GetOuterLoopVector3(), new List<List<Vector2>>());
-            List<Mesh> meshes = new List<Mesh>();
-            return meshes;
         }
 
         private bool CombineFor(MeshInfo meshInfo, List<MeshInfo> meshes, int i)
@@ -157,14 +156,44 @@ namespace IFC
         private void FixOverlap(MeshInfo m1, MeshInfo m2)
         {
             // Get all intersections
-            List<EdgeIntersect> intersections;
+            List<EdgeIntersect> intersections = new List<EdgeIntersect>();
             Dictionary<MeshInfo, List<int>> sharedPointsDict = new Dictionary<MeshInfo, List<int>>();
-            List<int> m1Shared;
-            List<int> m2Shared;
+            List<int> m1Shared = new List<int>();
+            List<int> m2Shared = new List<int>();
             (intersections, m1Shared, m2Shared) = GetAllEdgeIntersections(m1.Vertices, m2.Vertices, ref m1.OuterEdges, ref m2.OuterEdges, false);
             sharedPointsDict.Add(m1, m1Shared);
             sharedPointsDict.Add(m2, m2Shared);
 
+            List<Vector3> vertices = GetOuterVertices(m1, m2, ref intersections, ref sharedPointsDict);
+
+            // Get existing hole gaps        
+            List<List<Vector3>> holeVertices = GetExistingHoleLoopVertices(m1, m2);
+
+            // Solving the remaining intersection gives the gaps in between meshes as hole loops
+            int depth = 2;
+            List<Vector3> usedVertices = new List<Vector3>();
+            while (intersections.Count > 0)
+            {
+                depth--;
+                if (depth < 0)
+                    break;
+
+                List<Vector3> holeLoop = GetHoleLoop(m1, m2, vertices, ref usedVertices, ref intersections);
+                if (holeLoop.Count < 3)
+                    break;
+                holeVertices.Add(holeLoop);
+            }
+
+            AllMeshes.Remove(m1);
+            AllMeshes.Remove(m2);
+
+            MeshInfo newMesh = new MeshInfo(vertices, holeVertices);
+            AllMeshes.Add(newMesh);
+        }
+
+        #region HelperFunctions
+        private List<Vector3> GetOuterVertices(MeshInfo m1, MeshInfo m2, ref List<EdgeIntersect> intersections, ref Dictionary<MeshInfo, List<int>> sharedPointsDict)
+        {
             // Find a starting point, only requirement is that it lies outside of m2
             int startIndex = 0;
             while (Utils.PointInPolygon(m1.Vertices[startIndex], m2))
@@ -173,7 +202,7 @@ namespace IFC
                 if (startIndex >= m1.Vertices.Count)
                 {
                     AllMeshes.Remove(m1);
-                    return;
+                    return new List<Vector3>();
                 }
             }
 
@@ -218,7 +247,7 @@ namespace IFC
                 }
                 else
                 {
-                    if (GetClosestIntersect(vertices[vertices.Count - 1], intersections, m1.OuterEdges, m2.OuterEdges, edge, m1, m2, onFirstMesh, out intersect))
+                    if (GetClosestIntersect(vertices[vertices.Count - 1], intersections, edge, m1, m2, onFirstMesh, out intersect))
                     {
                         newV = intersect.intersectionPoint;
                         intersections.Remove(intersect);
@@ -261,14 +290,97 @@ namespace IFC
                 if (!done)
                     done = (edge.v1 == startIndex && onFirstMesh && !intersections.Exists(x => x.edge1 == edgeIdx || x.edge1 == lastEdgeIdx)) || (vertices.Last() == m1.Vertices[startIndex] && vertices.Count != 1);
             }
-            AllMeshes.Remove(m1);
-            AllMeshes.Remove(m2);
-
-            MeshInfo newMesh = new MeshInfo(vertices);
-            AllMeshes.Add(newMesh);
+            return vertices;
         }
 
-        #region HelperFunctions
+        private List<Vector3> GetHoleLoop(MeshInfo m1, MeshInfo m2, List<Vector3> vertices, ref List<Vector3> usedVertices, ref List<EdgeIntersect> intersections)
+        {
+            List<Vector3> holeLoop = new List<Vector3>();
+
+            EdgeInfo e = m1.OuterEdges[intersections[0].edge1];
+            Vector3 firstV = m1.Vertices[e.v1];
+            int startIdx = e.v1;
+            int edgeIdx = intersections[0].edge1;
+            if (vertices.Contains(firstV) || usedVertices.Contains(firstV))
+            {
+                firstV = m1.Vertices[e.v2];
+                startIdx = e.v2;
+            }
+
+            holeLoop.Add(firstV);
+            usedVertices.Add(firstV);
+
+            bool done = false;
+            bool onFirstMesh = true;
+            MeshInfo m = onFirstMesh ? m1 : m2;
+
+            EdgeInfo lastEdge = m1.OuterEdges.Find(x => x.v1 == startIdx);
+            int lastEdgeIdx = m1.OuterEdges.FindIndex(x => x == lastEdge);
+
+
+            while (!done)
+            {
+                Vector3 newV = Vector3.zero;
+                EdgeIntersect intersect = new EdgeIntersect();
+
+                if (GetClosestIntersect(holeLoop[holeLoop.Count - 1], intersections, e, m1, m2, onFirstMesh, out intersect, false, true))
+                {
+                    newV = intersect.intersectionPoint;
+                    intersections.Remove(intersect);
+
+                    // Flip
+                    onFirstMesh = !onFirstMesh;
+                    edgeIdx = onFirstMesh ? intersect.edge1 : intersect.edge2;
+                    m = onFirstMesh ? m1 : m2;
+                    e = m.OuterEdges[edgeIdx];
+                }
+                else
+                {
+                    if (m.Vertices[e.v1] != holeLoop[0])
+                        newV = m.Vertices[e.v1];
+
+                    edgeIdx--;
+                    if (edgeIdx < 0)
+                        edgeIdx = m.OuterEdges.Count - 1;
+
+                    e = m.OuterEdges[edgeIdx];
+                }
+
+                holeLoop.Add(newV);
+                usedVertices.Add(newV);
+
+                if (!done)
+                    done = (e.v2 == startIdx && onFirstMesh && !intersections.Exists(x => x.edge1 == edgeIdx || x.edge1 == lastEdgeIdx)) || (holeLoop.Last() == m1.Vertices[startIdx] && holeLoop.Count != 1);
+            }
+            return holeLoop;
+        }
+
+        private List<List<Vector3>> GetExistingHoleLoopVertices(MeshInfo m1, MeshInfo m2)
+        {
+            List<List<Vector3>> holeVertices = new List<List<Vector3>>();
+            List<List<Vector2>> list = m1.GetHoles();
+            for (int i = 0; i < list.Count; i++)
+            {
+                List<Vector3> converted = new List<Vector3>();
+                for (int v = 0; v < list[i].Count; v++)
+                {
+                    converted.Add(Utils.Vector3FromVector2(list[i][v]));
+                }
+                holeVertices.Add(converted);
+            }
+            list = m2.GetHoles();
+            for (int i = 0; i < list.Count; i++)
+            {
+                List<Vector3> converted = new List<Vector3>();
+                for (int v = 0; v < list[i].Count; v++)
+                {
+                    converted.Add(Utils.Vector3FromVector2(list[i][v]));
+                }
+                holeVertices.Add(converted);
+            }
+            return holeVertices;
+        }
+
         private OverlapType DetectOverlap(MeshInfo m1, MeshInfo m2)
         {
             // If the bounds are not overlapping the polygons won't overlap
@@ -361,7 +473,7 @@ namespace IFC
             return indices;
         }
 
-        private bool GetClosestIntersect(Vector3 lastPoint, List<EdgeIntersect> intersections, List<EdgeInfo> edges1, List<EdgeInfo> edges2, EdgeInfo e, MeshInfo m1, MeshInfo m2, bool onFirstMesh, out EdgeIntersect intersect, bool debug = false)
+        private bool GetClosestIntersect(Vector3 lastPoint, List<EdgeIntersect> intersections, EdgeInfo e, MeshInfo m1, MeshInfo m2, bool onFirstMesh, out EdgeIntersect intersect, bool debug = false, bool reverse = false)
         {
             intersect = new EdgeIntersect();
             List<EdgeIntersect> intersects = new List<EdgeIntersect>();
@@ -369,28 +481,32 @@ namespace IFC
             if (onFirstMesh)
             {
                 m = m1;
-                intersects = intersections.FindAll(x => edges1[x.edge1] == e);
+                intersects = intersections.FindAll(x => m1.OuterEdges[x.edge1] == e);
             }
             else
             {
                 m = m2;
-                intersects = intersections.FindAll(x => edges2[x.edge2] == e);
-            }
-
-            // Get direction of the edge
-            Vector3 edge_p1 = m.Vertices[e.v1];
-            Vector3 edge_p2 = m.Vertices[e.v2];
-            Vector3 edgeDirection = (edge_p2 - edge_p1).normalized;
-
-            if (debug)
-            {
-                InSceneDebugTool.Instance.DrawPoint(edge_p1, Color.red, .3f);
-                InSceneDebugTool.Instance.DrawPoint(edge_p2, Color.blue, .4f);
+                intersects = intersections.FindAll(x => m2.OuterEdges[x.edge2] == e);
             }
 
             if (intersects.Count == 0)
             {
                 return false;
+            }
+
+            // Get direction of the edge
+            Vector3 edge_p1 = m.Vertices[e.v1];
+            Vector3 edge_p2 = m.Vertices[e.v2];
+            Vector3 edgeDirection = Vector3.zero;
+            if (reverse)
+                edgeDirection = (edge_p1 - edge_p2).normalized;
+            else
+                edgeDirection = (edge_p2 - edge_p1).normalized;
+
+            if (debug)
+            {
+                InSceneDebugTool.Instance.DrawPoint(edge_p1, Color.red, .3f);
+                InSceneDebugTool.Instance.DrawPoint(edge_p2, Color.blue, .4f);
             }
 
             float minDist = float.MaxValue;
@@ -410,10 +526,10 @@ namespace IFC
                 foreach (EdgeIntersect eI in intersects)
                 {
                     Vector3 intersectionPoint = new Vector3();
-                    Vector3 p1 = m1.Vertices[edges1[eI.edge1].v1];
-                    Vector3 p2 = m1.Vertices[edges1[eI.edge1].v2];
-                    Vector3 p3 = m2.Vertices[edges2[eI.edge2].v1];
-                    Vector3 p4 = m2.Vertices[edges2[eI.edge2].v2];
+                    Vector3 p1 = m1.Vertices[m1.OuterEdges[eI.edge1].v1];
+                    Vector3 p2 = m1.Vertices[m1.OuterEdges[eI.edge1].v2];
+                    Vector3 p3 = m2.Vertices[m2.OuterEdges[eI.edge2].v1];
+                    Vector3 p4 = m2.Vertices[m2.OuterEdges[eI.edge2].v2];
 
                     Utils.SegmentIntersect(p1, p2, p3, p4, out intersectionPoint);
 
@@ -475,11 +591,8 @@ namespace IFC
             List<EdgeIntersect> intersections = new List<EdgeIntersect>();
 
             List<Vector3> sharedPoints = new List<Vector3>();
-            // Dictionary<MeshInfo, List<int>> sharedPointsDict = new Dictionary<MeshInfo, List<int>>();
             List<int> m1Shared = new List<int>();
             List<int> m2Shared = new List<int>();
-
-            // List<EdgeIntersect> sharedEdges = new List<EdgeIntersect>();
 
             for (int i = 0; i < edges1.Count; i++)
             {

@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using static IFC.EdgeHelper;
 
@@ -33,8 +34,8 @@ namespace IFC
             lr.startColor = color;
             lr.endColor = color;
 
-            lr.startWidth = .1f;
-            lr.endWidth = .1f;
+            lr.startWidth = .05f;
+            lr.endWidth = .05f;
 
             lr.SetPosition(0, p1);
             lr.SetPosition(1, p2);
@@ -44,6 +45,10 @@ namespace IFC
 
         public void ClearDebug()
         {
+            List<MeshFilter> filters = GapsParent.Instance.GetComponentsInChildren<MeshFilter>().ToList();
+            foreach (MeshFilter f in filters)
+                Destroy(f.gameObject);
+
             foreach (GameObject line in _debugObjects)
             {
                 Destroy(line);

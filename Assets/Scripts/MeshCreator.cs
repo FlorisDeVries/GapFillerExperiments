@@ -158,10 +158,21 @@ namespace IFC
 
                 _vertices = _outerBoundaryVertices;
             }
-            CreateMesh(_vertices, _holes);
+            CreateMesh(_vertices, _holes, MeshMaterial.color);
         }
 
-        public void CreateMesh(List<Vector3> vertices, List<List<Vector2>> holes, bool debug = false)
+        public void CreateMeshes(List<MeshInfo> meshes, bool debug = false)
+        {
+            CreateMeshes(meshes, MeshMaterial.color, debug);
+        }
+
+        public void CreateMeshes(List<MeshInfo> meshes, Color color, bool debug = false)
+        {
+            foreach (MeshInfo mI in meshes)
+                MeshCreator.Instance.CreateMesh(mI.GetOuterLoopVector3(), mI.GetHoles(), color);
+        }
+
+        public void CreateMesh(List<Vector3> vertices, List<List<Vector2>> holes, Color color, bool debug = false)
         {
             List<Vector2> vertices2D = new List<Vector2>();
             _vertices = vertices;
@@ -179,7 +190,8 @@ namespace IFC
             MeshFilter meshFilter = meshObject.AddComponent<MeshFilter>();
             MeshRenderer renderer = meshObject.AddComponent<MeshRenderer>();
             renderer.shadowCastingMode = ShadowCastingMode.Off;
-            renderer.material = MeshMaterial;
+            renderer.material = new Material(Shader.Find("Particles/Standard Unlit"));
+            renderer.material.color = color;
 
             // Generate Mesh
             meshFilter.sharedMesh = MeshGenerator.GenerateMeshTriangulator(vertices2D, holes);
@@ -194,7 +206,6 @@ namespace IFC
 
         public void Reset()
         {
-            InSceneDebugTool.Instance.ClearDebug();
             // Cleanup Step
             foreach (GameObject gO in _vObjects)
                 Destroy(gO);
@@ -224,7 +235,7 @@ namespace IFC
                 Vector3 v3 = vertices[(int)edge.v1];
                 Vector3 v4 = vertices[(int)edge.v2];
 
-                if(v2 == v3 || v2 == v4)
+                if (v2 == v3 || v2 == v4)
                     return false;
 
                 Vector3 intersectionPoint = new Vector3();

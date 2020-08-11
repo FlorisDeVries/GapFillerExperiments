@@ -30,19 +30,45 @@ namespace IFC
 
         public MeshInfo(List<Vector3> vertices)
         {
+            SetVertices(vertices);
+
+            HolesEdges = new List<List<EdgeInfo>>();
+
+            RecalculateBounds();
+        }
+
+        public MeshInfo(List<Vector3> vertices, List<List<Vector3>> holes)
+        {
+            SetVertices(vertices);
+
+            HolesEdges = new List<List<EdgeInfo>>();
+
+            // Do something with the holes
+            foreach (List<Vector3> list in holes)
+            {
+                List<EdgeInfo> holeLoop = new List<EdgeInfo>();
+                int loopBeginIdx = vertices.Count;
+                for (int i = 0; i < list.Count - 1; i++)
+                {
+                    holeLoop.Add(new EdgeInfo(loopBeginIdx + i, loopBeginIdx + i + 1));
+                    vertices.Add(list[i]);
+                }
+                vertices.Add(list[list.Count - 1]);
+                holeLoop.Add(new EdgeInfo(vertices.Count - 1, loopBeginIdx));
+                HolesEdges.Add(holeLoop);
+            }
+        }
+
+        private void SetVertices(List<Vector3> vertices)
+        {
             Vertices = vertices;
 
-            // Generate edge list
             OuterEdges = new List<EdgeInfo>();
             for (int i = 0; i < vertices.Count - 1; i++)
             {
                 OuterEdges.Add(new EdgeInfo(i, i + 1));
             }
             OuterEdges.Add(new EdgeInfo(vertices.Count - 1, 0));
-
-            HolesEdges = new List<List<EdgeInfo>>();
-
-            RecalculateBounds();
         }
 
         public void RecalculateBounds()
@@ -93,13 +119,13 @@ namespace IFC
                 InSceneDebugTool.Instance.DrawEdge(eI, Vertices, color, offset);
             }
 
-            // for (int i = 0; i < HolesEdges.Count; i++)
-            // {
-            //     List<EdgeInfo> hole = HolesEdges[i];
-            //     foreach (EdgeInfo eI in hole)
-            //         InSceneDebugTool.Instance.DrawEdge(eI, Vertices, Random.ColorHSV(), offset);
-            // }
-
+            for (int i = 0; i < HolesEdges.Count; i++)
+            {
+                Color holeColor = Random.ColorHSV(0, 1, 1, 1, 1, 1);
+                List<EdgeInfo> hole = HolesEdges[i];
+                foreach (EdgeInfo eI in hole)
+                    InSceneDebugTool.Instance.DrawEdge(eI, Vertices, holeColor, offset);
+            }
 
             // InSceneDebugTool.Instance.DrawBounds(Bounds);
         }
